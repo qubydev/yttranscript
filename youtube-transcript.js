@@ -62,13 +62,11 @@ export class YoutubeTranscript {
   static async fetchTranscript(videoId, config) {
     const identifier = this.retrieveVideoId(videoId);
 
-    // Try InnerTube API first
     const innerTubeResult = await this.fetchViaInnerTube(identifier, config);
     if (innerTubeResult) {
       return innerTubeResult;
     }
 
-    // Fall back to HTML scraping
     return this.fetchViaWebPage(identifier, videoId, config);
   }
 
@@ -182,7 +180,6 @@ export class YoutubeTranscript {
 
     const transcriptURL = track.baseUrl;
 
-    // Validate URL to prevent SSRF
     try {
       const captionUrl = new URL(transcriptURL);
       if (!captionUrl.hostname.endsWith('.youtube.com')) {
@@ -211,7 +208,6 @@ export class YoutubeTranscript {
   static parseTranscriptXml(xml, lang) {
     const results = [];
 
-    // Try srv3 format first: <p t="ms" d="ms"><s>word</s>...</p>
     const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
     let match;
     while ((match = pRegex.exec(xml)) !== null) {
@@ -242,7 +238,6 @@ export class YoutubeTranscript {
 
     if (results.length > 0) return results;
 
-    // Fall back to classic format: <text start="s" dur="s">content</text>
     const classicResults = [...xml.matchAll(RE_XML_TRANSCRIPT)];
     return classicResults.map((result) => ({
       text: this.decodeEntities(result[3]),
