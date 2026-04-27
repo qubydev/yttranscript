@@ -1,8 +1,7 @@
 import 'dotenv/config';
-
 import express from 'express';
 import cors from 'cors';
-import { fetchTranscript } from './youtube-transcript.js';
+import { fetchTranscript, listTranscripts } from './yt.js';
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -17,21 +16,31 @@ const scraperApiFetch = async (url, options = {}) => {
   return fetch(proxyUrl, options);
 };
 
-app.get('/', (req, res) => {
-  res.send('Hi there!');
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok' });
 });
 
-app.get('/transcript', async (req, res) => {
-  const videoId = req.query.video;
-  const lang = req.query.lang;
-
-  if (!videoId) {
-    return res.status(400).json({ error: 'Missing video parameter. Please provide a video ID or URL.' });
+app.get('/api/videos/:videoId', async (req, res) => {
+  const { videoId } = req.params;
+  
+  try {
+    const tracks = await listTranscripts(videoId, { 
+      fetch: scraperApiFetch 
+    });
+    res.json({ success: true, data: tracks });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
   }
+});
+
+app.get('/api/videos/:videoId/transcript', async (req, res) => {
+  const { videoId } = req.params;
+  const { lang, kind } = req.query;
   
   try {
     const transcript = await fetchTranscript(videoId, { 
       lang,
+      kind,
       fetch: scraperApiFetch 
     });
     res.json({ success: true, data: transcript });

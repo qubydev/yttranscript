@@ -1,12 +1,8 @@
-const RE_YOUTUBE =
-  /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
-const USER_AGENT =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)';
-const RE_XML_TRANSCRIPT =
-  /<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g;
+const RE_YOUTUBE = /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i;
+const USER_AGENT = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_4) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/85.0.4183.83 Safari/537.36,gzip(gfe)';
+const RE_XML_TRANSCRIPT = /<text start="([^"]*)" dur="([^"]*)">([^<]*)<\/text>/g;
 
-const INNERTUBE_API_URL =
-  'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
+const INNERTUBE_API_URL = 'https://www.youtube.com/youtubei/v1/player?prettyPrint=false';
 const INNERTUBE_CLIENT_VERSION = '20.10.38';
 const INNERTUBE_CONTEXT = {
   client: {
@@ -24,9 +20,7 @@ export class YoutubeTranscriptError extends Error {
 
 export class YoutubeTranscriptTooManyRequestError extends YoutubeTranscriptError {
   constructor() {
-    super(
-      'YouTube is receiving too many requests from this IP and now requires solving a captcha to continue',
-    );
+    super('YouTube is receiving too many requests from this IP and now requires solving a captcha to continue');
   }
 }
 
@@ -50,27 +44,12 @@ export class YoutubeTranscriptNotAvailableError extends YoutubeTranscriptError {
 
 export class YoutubeTranscriptNotAvailableLanguageError extends YoutubeTranscriptError {
   constructor(lang, availableLangs, videoId) {
-    super(
-      `No transcripts are available in ${lang} this video (${videoId}). Available languages: ${availableLangs.join(
-        ', ',
-      )}`,
-    );
+    super(`No transcripts are available in ${lang} this video (${videoId}). Available languages: ${availableLangs.join(', ')}`);
   }
 }
 
 export class YoutubeTranscript {
-  static async fetchTranscript(videoId, config) {
-    const identifier = this.retrieveVideoId(videoId);
-
-    const innerTubeResult = await this.fetchViaInnerTube(identifier, config);
-    if (innerTubeResult) {
-      return innerTubeResult;
-    }
-
-    return this.fetchViaWebPage(identifier, videoId, config);
-  }
-
-  static async fetchViaInnerTube(identifier, config) {
+  static async fetchCaptionTracks(identifier, config) {
     try {
       const fetchFn = config?.fetch ?? fetch;
       const resp = await fetchFn(INNERTUBE_API_URL, {
@@ -85,23 +64,16 @@ export class YoutubeTranscript {
         }),
       });
 
-      if (!resp.ok) return undefined;
-
-      const data = await resp.json();
-      const captionTracks =
-        data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
-
-      if (!Array.isArray(captionTracks) || captionTracks.length === 0) {
-        return undefined;
+      if (resp.ok) {
+        const data = await resp.json();
+        const captionTracks = data?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+        if (Array.isArray(captionTracks) && captionTracks.length > 0) {
+          return captionTracks;
+        }
       }
-
-      return this.fetchTranscriptFromTracks(captionTracks, identifier, config);
     } catch {
-      return undefined;
     }
-  }
 
-  static async fetchViaWebPage(identifier, originalVideoId, config) {
     const fetchFn = config?.fetch ?? fetch;
     const videoPageResponse = await fetchFn(
       `https://www.youtube.com/watch?v=${identifier}`,
@@ -118,25 +90,35 @@ export class YoutubeTranscript {
       throw new YoutubeTranscriptTooManyRequestError();
     }
     if (!videoPageBody.includes('"playabilityStatus":')) {
-      throw new YoutubeTranscriptVideoUnavailableError(originalVideoId);
+      throw new YoutubeTranscriptVideoUnavailableError(identifier);
     }
 
-    const playerResponse = this.parseInlineJson(
-      videoPageBody,
-      'ytInitialPlayerResponse',
-    );
-    const captionTracks =
-      playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
+    const playerResponse = this.parseInlineJson(videoPageBody, 'ytInitialPlayerResponse');
+    const captionTracks = playerResponse?.captions?.playerCaptionsTracklistRenderer?.captionTracks;
 
     if (!Array.isArray(captionTracks) || captionTracks.length === 0) {
-      throw new YoutubeTranscriptDisabledError(originalVideoId);
+      throw new YoutubeTranscriptDisabledError(identifier);
     }
 
-    return this.fetchTranscriptFromTracks(
-      captionTracks,
-      originalVideoId,
-      config,
-    );
+    return captionTracks;
+  }
+
+  static async listTranscripts(videoId, config) {
+    const identifier = this.retrieveVideoId(videoId);
+    const captionTracks = await this.fetchCaptionTracks(identifier, config);
+
+    return captionTracks.map((track) => ({
+      languageCode: track.languageCode,
+      languageName: track.name?.simpleText || track.languageCode,
+      kind: track.kind || 'standard',
+      isTranslatable: track.isTranslatable,
+    }));
+  }
+
+  static async fetchTranscript(videoId, config) {
+    const identifier = this.retrieveVideoId(videoId);
+    const captionTracks = await this.fetchCaptionTracks(identifier, config);
+    return this.fetchTranscriptFromTracks(captionTracks, identifier, config);
   }
 
   static parseInlineJson(html, globalName) {
@@ -174,9 +156,24 @@ export class YoutubeTranscript {
       );
     }
 
-    const track = config?.lang
-      ? captionTracks.find((track) => track.languageCode === config?.lang)
-      : captionTracks[0];
+    let track;
+    if (config?.lang) {
+      const targetKind = config?.kind || 'standard';
+      track = captionTracks.find((t) => {
+        const trackKind = t.kind || 'standard';
+        return t.languageCode === config.lang && trackKind === targetKind;
+      });
+
+      if (!track && config?.kind) {
+        throw new YoutubeTranscriptError(
+          `No transcript found for language '${config.lang}' with kind '${config.kind}'`
+        );
+      } else if (!track) {
+        track = captionTracks.find((t) => t.languageCode === config.lang);
+      }
+    } else {
+      track = captionTracks[0];
+    }
 
     const transcriptURL = track.baseUrl;
 
@@ -189,6 +186,7 @@ export class YoutubeTranscript {
       if (e instanceof YoutubeTranscriptError) throw e;
       throw new YoutubeTranscriptNotAvailableError(videoId);
     }
+
     const fetchFn = config?.fetch ?? fetch;
     const transcriptResponse = await fetchFn(transcriptURL, {
       headers: {
@@ -196,6 +194,7 @@ export class YoutubeTranscript {
         'User-Agent': USER_AGENT,
       },
     });
+
     if (!transcriptResponse.ok) {
       throw new YoutubeTranscriptNotAvailableError(videoId);
     }
@@ -207,9 +206,9 @@ export class YoutubeTranscript {
 
   static parseTranscriptXml(xml, lang) {
     const results = [];
-
     const pRegex = /<p\s+t="(\d+)"\s+d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
     let match;
+
     while ((match = pRegex.exec(xml)) !== null) {
       const startMs = parseInt(match[1], 10);
       const durMs = parseInt(match[2], 10);
@@ -271,12 +270,14 @@ export class YoutubeTranscript {
     if (matchId && matchId.length) {
       return matchId[1];
     }
-    throw new YoutubeTranscriptError(
-      'Impossible to retrieve Youtube video ID.',
-    );
+    throw new YoutubeTranscriptError('Impossible to retrieve Youtube video ID.');
   }
 }
 
 export function fetchTranscript(videoId, config) {
   return YoutubeTranscript.fetchTranscript(videoId, config);
+}
+
+export function listTranscripts(videoId, config) {
+  return YoutubeTranscript.listTranscripts(videoId, config);
 }
