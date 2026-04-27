@@ -7,6 +7,10 @@ const port = process.env.PORT || 3000;
 
 app.use(cors());
 
+app.get('/', (req, res) => {
+  res.send('Hi there!');
+});
+
 app.get('/transcript', async (req, res) => {
   const videoId = req.query.video;
   const lang = req.query.lang;
